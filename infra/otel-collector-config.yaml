@@ -1,0 +1,48 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  batch:
+
+exporters:
+  otlp:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+  kafka/traces:
+    brokers: [kafka:29092]
+    topic: otel-traces
+    encoding: otlp_json
+  kafka/metrics:
+    brokers: [kafka:29092]
+    topic: otel-metrics
+  kafka/logs:
+    brokers: [kafka:29092]
+    topic: otel-logs
+  kafka/alerts:
+    brokers: [kafka:29092]
+    topic: otel-alerts
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp, kafka/traces, debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus, kafka/metrics, debug]
+    logs:
+      receivers: [otlp]
+      exporters: [loki, kafka/logs, debug]
+    logs/alerts:
+      receivers: [otlp]
+      exporters: [kafka/alerts, debug]
