@@ -1,53 +1,42 @@
-from agents import PlannerAgent, AnalyzerAgent, VerifierAgent
+from agents import create_rca_graph
 from schemas.signals import IncidentContext, RCAConclusion
-from typing import List
 
 class RCAOrchestrator:
     def __init__(self):
-        # In a real system, these would be initialized with appropriate config/keys
-        self.planner = PlannerAgent()
-        self.analyzer = AnalyzerAgent()
-        self.verifier = VerifierAgent()
+        # Compile and store the LangGraph application
+        self.graph = create_rca_graph()
 
     def run_workflow(self, context: IncidentContext) -> RCAConclusion:
-        # 1. PLAN: Generate candidates via LLM
-        hypotheses = self.planner.generate_hypotheses(context)
+        print(f"Orchestrator: Initiating LangGraph RCA Workflow for Incident {context.incident_id}")
         
-        # 2. ANALYZE: Deterministically verify each candidate against generic signals
-        verified_results = []
-        print(f"Orchestrator: Analysis phase started for {len(hypotheses)} hypotheses.")
-        for h in hypotheses:
-            analysis = self.analyzer.verify(h, context.signals)
-            print(f"Hypothesis '{h.get('statement')}' verification: {analysis['is_confirmed']} (Confidence: {analysis['confidence']})")
-            if analysis["is_confirmed"]:
-                verified_results.append({
-                    "hypothesis": h["statement"],
-                    "confidence": analysis["confidence"],
-                    "evidence": analysis["evidence"],
-                    "reasoning": h.get("reasoning", "")
-                })
-        print(f"Orchestrator: Analysis phase complete. Verified results: {len(verified_results)}")
+        # Invoke the graph with the initial state
+        final_state = self.graph.invoke({
+            "context": context,
+            "hypotheses": [],
+            "verification_results": {},
+            "retry_count": 0,
+            "final_explanation": ""
+        })
         
-        # 3. VERIFY: Synthesize final report via LLM
-        if not verified_results:
+        results = final_state.get("verification_results", {})
+        
+        # If verification totally failed across all retries
+        if not results or not results.get("is_confirmed", False):
              return RCAConclusion(
                 incident_id=context.incident_id,
                 root_cause="Inconclusive",
                 confidence=0.0,
                 evidence=[],
-                explanation="None of the generated hypotheses could be confirmed with the available signals."
+                explanation="None of the generated hypotheses could be confirmed with the available signals even after maximum retries."
             )
 
-        # Pick the most confident result
-        best_result = max(verified_results, key=lambda x: x['confidence'])
-        
-        # Final polish
-        synthesis = self.verifier.finalize(context, [best_result])
+        # Get the winner
+        winning_hypothesis = results.get("winning_hypothesis", {})
         
         return RCAConclusion(
             incident_id=context.incident_id,
-            root_cause=best_result["hypothesis"],
-            confidence=best_result["confidence"],
-            evidence=best_result["evidence"],
-            explanation=synthesis["explanation"]
+            root_cause=winning_hypothesis.get("statement", "Unknown"),
+            confidence=results.get("confidence", 0.0),
+            evidence=results.get("evidence", []),
+            explanation=final_state.get("final_explanation", "Analysis complete.")
         )
