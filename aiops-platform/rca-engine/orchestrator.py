@@ -8,15 +8,20 @@ class RCAOrchestrator:
 
     def run_workflow(self, context: IncidentContext) -> RCAConclusion:
         print(f"Orchestrator: Initiating LangGraph RCA Workflow for Incident {context.incident_id}")
-        
-        # Invoke the graph with the initial state
+
+        # thread_id scopes the checkpointer snapshot to THIS incident.
+        # If the graph crashes and is re-invoked with the same thread_id,
+        # LangGraph resumes from the last successful node instead of restarting.
+        config = {"configurable": {"thread_id": context.incident_id}}
+
+        # Invoke the graph with the initial state + checkpoint config
         final_state = self.graph.invoke({
             "context": context,
             "hypotheses": [],
             "verification_results": {},
             "retry_count": 0,
             "final_explanation": ""
-        })
+        }, config=config)
         
         results = final_state.get("verification_results", {})
         
