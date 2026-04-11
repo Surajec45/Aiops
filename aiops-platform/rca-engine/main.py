@@ -22,7 +22,7 @@ async def analyze_incident(context: IncidentContext):
     2. Analyzer Agent: Deterministic check of signals.
     3. Verifier Agent: Logical validation & Scoring.
     """
-    result = orchestrator.run_workflow(context)
+    result = await orchestrator.run_workflow(context)
     return result
 
 if __name__ == "__main__":

@@ -1,41 +1,72 @@
+import os
+from psycopg_pool import AsyncConnectionPool
+from langgraph.checkpoint.postgres import PostgresSaver
 from agents import create_rca_graph
 from schemas.signals import IncidentContext, RCAConclusion
+from langchain_openai import ChatOpenAI
+
+# Postgres Connection Details
+POSTGRES_URL = os.getenv("POSTGRES_URL", "postgresql://postgres:password@postgres-state:5432/langgraph_state")
+
+def get_verifier_llm():
+    """Helper for agents.py nodes to get an LLM instance."""
+    return ChatOpenAI(
+        model=os.getenv("LLM_MODEL", "gpt-4o"),
+        api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("LLM_BASE_URL") or None
+    )
 
 class RCAOrchestrator:
     def __init__(self):
-        # Compile and store the LangGraph application
-        self.graph = create_rca_graph()
+        self.graph = None
+        self.pool = None
+        self.checkpointer = None
 
-    def run_workflow(self, context: IncidentContext) -> RCAConclusion:
-        print(f"Orchestrator: Initiating LangGraph RCA Workflow for Incident {context.incident_id}")
+    async def _ensure_initialized(self):
+        """Initializes Postgres pool, checkpointer, and graph if needed."""
+        if self.pool is None:
+            print(f"Orchestrator: Connecting to Postgres at {POSTGRES_URL}")
+            # min_size=1, max_size=10 is a reasonable default
+            self.pool = AsyncConnectionPool(conninfo=POSTGRES_URL, max_size=10, open=False)
+            await self.pool.open()
+            
+        if self.checkpointer is None:
+            self.checkpointer = PostgresSaver(self.pool)
+            # Ensure the necessary tables exist in the database
+            await self.checkpointer.setup()
+            
+        if self.graph is None:
+            self.graph = await create_rca_graph(self.checkpointer)
 
-        # thread_id scopes the checkpointer snapshot to THIS incident.
-        # If the graph crashes and is re-invoked with the same thread_id,
-        # LangGraph resumes from the last successful node instead of restarting.
+    async def run_workflow(self, context: IncidentContext) -> RCAConclusion:
+        print(f"Orchestrator: Initiating Persistent LangGraph RCA Workflow for Incident {context.incident_id}")
+        await self._ensure_initialized()
+
+        # thread_id ensures this investigation state is persisted in Postgres
         config = {"configurable": {"thread_id": context.incident_id}}
 
-        # Invoke the graph with the initial state + checkpoint config
-        final_state = self.graph.invoke({
+        # Invoke the graph
+        final_state = await self.graph.ainvoke({
             "context": context,
+            "messages": [],
             "hypotheses": [],
             "verification_results": {},
             "retry_count": 0,
+            "exploration_count": 0,
             "final_explanation": ""
         }, config=config)
         
         results = final_state.get("verification_results", {})
         
-        # If verification totally failed across all retries
         if not results or not results.get("is_confirmed", False):
              return RCAConclusion(
                 incident_id=context.incident_id,
                 root_cause="Inconclusive",
                 confidence=0.0,
                 evidence=[],
-                explanation="None of the generated hypotheses could be confirmed with the available signals even after maximum retries."
+                explanation="None of the generated hypotheses could be confirmed with the available signals."
             )
 
-        # Get the winner
         winning_hypothesis = results.get("winning_hypothesis", {})
         
         return RCAConclusion(
@@ -45,3 +76,8 @@ class RCAOrchestrator:
             evidence=results.get("evidence", []),
             explanation=final_state.get("final_explanation", "Analysis complete.")
         )
+
+    async def close(self):
+        """Cleanup connection pool on shutdown."""
+        if self.pool:
+            await self.pool.close()

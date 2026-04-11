@@ -1,10 +1,28 @@
 services:
   # Streaming Backbone
+  # DB for LangGraph State Persistence
+  postgres-state:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: langgraph_state
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_state_data:/var/lib/postgresql/data
+    networks:
+      - default
+      - voicesentiment-network
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - default
+      - voicesentiment-network
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
@@ -24,6 +42,9 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - default
+      - voicesentiment-network
 
   # Graph Store
   neo4j:
@@ -34,6 +55,24 @@ services:
     environment:
       NEO4J_AUTH: neo4j/password
       NEO4J_PLUGINS: '["apoc"]'
+    networks:
+      - default
+      - voicesentiment-network
+
+  # MCP Server - Tooling Hub
+  mcp-server:
+    build: ../aiops-platform/mcp-server
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MCP_TRANSPORT: "sse"
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+    depends_on:
+      - neo4j
+    networks:
+      - default
+      - voicesentiment-network
 
   # Stream Processing
   flink-jobmanager:
@@ -45,6 +84,9 @@ services:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
+    networks:
+      - default
+      - voicesentiment-network
 
   flink-taskmanager:
     image: flink:latest
@@ -56,6 +98,9 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
+    networks:
+      - default
+      - voicesentiment-network
 
   # Ingestion
   otel-collector:
@@ -84,12 +129,18 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
+    networks:
+      - default
+      - voicesentiment-network
 
   loki:
     image: grafana/loki:latest
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - default
+      - voicesentiment-network
 
   tempo:
     image: grafana/tempo:latest
@@ -99,6 +150,9 @@ services:
     ports:
       - "3200:3200"
       - "4317" # otlp grpc
+    networks:
+      - default
+      - voicesentiment-network
 
   grafana:
     image: grafana/grafana:latest
@@ -111,6 +165,9 @@ services:
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    networks:
+      - default
+      - voicesentiment-network
 
   # ... (existing services)
   rca-engine:
@@ -118,6 +175,10 @@ services:
     ports:
       - "8001:8000"
     depends_on:
+      mcp-server:
+        condition: service_started
+      postgres-state:
+        condition: service_started
       kafka:
         condition: service_healthy
       neo4j:
@@ -136,8 +197,11 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: password
-
-  # Telemetry Simulator (Automated Testing)
+      MCP_SERVER_URL: http://mcp-server:8000/sse/
+      POSTGRES_URL: postgresql://postgres:password@postgres-state:5432/langgraph_state
+    networks:
+      - default
+      - voicesentiment-network
   simulator:
     build:
       context: ../aiops-platform
@@ -148,6 +212,9 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    networks:
+      - default
+      - voicesentiment-network
 
   topology-discovery:
     build: ../aiops-platform/topology-discovery
@@ -162,17 +229,19 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: password
+    networks:
+      - default
+      - voicesentiment-network
 
 networks:
-
+  default:
   voicesentiment-network:
     external: true
 
 volumes:
+  postgres_state_data:
   postgres_data:
   redis_data:
   neo4j_data:
   upload_data:
   model_cache:
-
-

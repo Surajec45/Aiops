@@ -23,7 +23,7 @@ class IncidentContext(BaseModel):
     incident_id: str
     timestamp: datetime
     primary_affected_service: str
-    topology_snapshot: Dict  # Graph structure from Neo4j
+    topology_snapshot: Optional[Dict] = {}  # Optional since we use dynamic MCP tools now
     signals: List[StructuredSignal]
     time_window_minutes: int
 

@@ -9,3 +9,7 @@ langchain
 langchain-core
 langchain-openai
 langgraph
+mcp[cli]
+httpx
+langgraph-checkpoint-postgres
+psycopg[binary]
