@@ -6,6 +6,7 @@ from graph.nodes import (
     analyzer_node,
     planner_node,
     should_continue,
+    should_retry,
     summarizer_node,
     verifier_node,
 )
@@ -44,7 +45,14 @@ async def create_rca_graph(checkpointer: PostgresSaver):
     # after summarizer → back to planner (with compressed history)
     builder.add_edge("summarizer", "planner")
 
-    builder.add_edge("analyze", "verifier")
+    builder.add_conditional_edges(
+        "analyze",
+        should_retry,
+        {
+            "planner": "planner",
+            "verifier": "verifier",
+        },
+    )
     builder.add_edge("verifier", END)
 
     return builder.compile(checkpointer=checkpointer)

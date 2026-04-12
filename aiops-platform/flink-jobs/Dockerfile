@@ -1,11 +1,14 @@
 FROM flink:1.18-scala_2.12-java11
 
-# ── Install Python 3.11 + pip ─────────────────────────────────────────────────
+# ── Install Python 3.11 + pip + build tools ──────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.11 \
         python3.11-dev \
         python3-pip \
         curl \
+        gcc \
+        g++ \
+        build-essential \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*

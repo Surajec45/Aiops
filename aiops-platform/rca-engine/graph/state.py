@@ -1,3 +1,4 @@
+import os
 from typing import Annotated, List, TypedDict
 
 from langchain_core.messages import BaseMessage, SystemMessage
@@ -6,6 +7,9 @@ from schemas.signals import IncidentContext
 
 # Summarizer triggers when message count exceeds this threshold
 SUMMARIZE_THRESHOLD = 20
+
+# Max times the planner is retried when analyzer finds no valid hypotheses
+MAX_RETRIES = int(os.getenv("RCA_MAX_RETRIES", "2"))
 
 
 def _messages_reducer(current: List[BaseMessage], update: List[BaseMessage]) -> List[BaseMessage]:

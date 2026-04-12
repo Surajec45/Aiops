@@ -22,7 +22,11 @@ path_setup.ensure_platform_path()
 
 from shared.subgraph_cypher import SERVICE_SUBGRAPH_ALL_CYPHER
 
-mcp = FastMCP("AIOps Platform Tools")
+mcp = FastMCP(
+    "AIOps Platform Tools",
+    host=os.getenv("FASTMCP_HOST", "0.0.0.0"),
+    port=int(os.getenv("FASTMCP_PORT", "8000")),
+)
 
 # ── config ────────────────────────────────────────────────────────────────────
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
@@ -262,7 +266,8 @@ def get_upstream_impact(service_name: str) -> str:
 
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "stdio")
-    if transport == "sse":
-        mcp.run(transport="sse", host="0.0.0.0", port=8000)
-    else:
-        mcp.run()
+    # FastMCP reads host/port from env vars:
+    #   FASTMCP_HOST (default 0.0.0.0)
+    #   FASTMCP_PORT (default 8000)
+    # Do NOT pass host/port as kwargs — this version doesn't support them.
+    mcp.run(transport=transport)

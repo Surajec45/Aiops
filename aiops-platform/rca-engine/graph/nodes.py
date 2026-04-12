@@ -19,11 +19,12 @@ import re
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from graph.state import RCAState, SUMMARIZE_THRESHOLD
+from graph.state import RCAState, SUMMARIZE_THRESHOLD, MAX_RETRIES
 from llm_config import get_llm, get_verifier_llm
 from mcp_tools import get_mcp_tools
 
 MAX_EXPLORATION_STEPS = int(os.getenv("RCA_MAX_EXPLORATION_STEPS", "10"))
+MIN_CONFIDENCE_THRESHOLD = float(os.getenv("RCA_MIN_CONFIDENCE", "0.7"))
 
 
 # ── planner ───────────────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ async def planner_node(state: RCAState) -> dict:
     context = state["context"]
     messages = state.get("messages", [])
     exploration_count = state.get("exploration_count", 0)
+    retry_count = state.get("retry_count", 0)
 
     # Build the initial prompt only on the very first entry (empty message list)
     if not messages:
@@ -91,6 +93,37 @@ async def planner_node(state: RCAState) -> dict:
             "Start your investigation. Call tools first, conclude last."
         )
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_msg)]
+
+    # On a retry, append a nudge so the planner knows its previous output was weak
+    if retry_count > 0 and messages:
+        prev_results = state.get("verification_results", {})
+        prev_confidence = prev_results.get("confidence", 0.0)
+        prev_hypothesis = prev_results.get("winning_hypothesis", {}).get("statement", "")
+
+        if prev_hypothesis:
+            reason = (
+                f"Your previous hypothesis had low confidence ({prev_confidence:.0%} < {MIN_CONFIDENCE_THRESHOLD:.0%}):\n"
+                f"  \"{prev_hypothesis}\"\n"
+                "You need to gather more evidence. Call additional tools — check dependencies, "
+                "metrics with a longer window, or logs from upstream services."
+            )
+        else:
+            reason = (
+                "Your previous response did not contain a valid JSON hypotheses block.\n"
+                "You MUST end your response with ONLY this exact format — no prose after it:"
+            )
+
+        nudge = (
+            f"## RETRY {retry_count}/{MAX_RETRIES}\n"
+            f"{reason}\n\n"
+            "Output format required:\n"
+            "```json\n"
+            '{"hypotheses": [\n'
+            '  {"statement": "Root cause in one sentence", "confidence": 0.9, "evidence": ["..."]}\n'
+            "]}\n"
+            "```"
+        )
+        messages = list(messages) + [HumanMessage(content=nudge)]
 
     response = await llm_with_tools.ainvoke(messages)
 
@@ -212,6 +245,28 @@ def should_continue(state: RCAState) -> str:
     return "analyze"
 
 
+def should_retry(state: RCAState) -> str:
+    """
+    Routing after analyzer_node:
+      - Confident hypothesis found (>= MIN_CONFIDENCE_THRESHOLD) → verifier
+      - Low confidence or no hypotheses + retries remaining → planner (with nudge)
+      - Retries exhausted → verifier (best effort or inconclusive)
+    """
+    results = state.get("verification_results", {})
+    retry_count = state.get("retry_count", 0)
+
+    if results.get("is_confirmed"):
+        return "verifier"
+
+    if retry_count <= MAX_RETRIES:
+        confidence = results.get("confidence", 0.0)
+        print(f"[analyzer] Confidence {confidence:.0%} below threshold, retrying planner (attempt {retry_count}/{MAX_RETRIES})")
+        return "planner"
+
+    print(f"[analyzer] Retries exhausted ({retry_count}), proceeding to verifier with best available result")
+    return "verifier"
+
+
 # ── analyzer ──────────────────────────────────────────────────────────────────
 
 def analyzer_node(state: RCAState) -> dict:
@@ -246,14 +301,22 @@ def analyzer_node(state: RCAState) -> dict:
 
     if hypotheses:
         best = max(hypotheses, key=lambda h: h.get("confidence", 0.0))
+        confidence = best.get("confidence", 0.0)
+        is_confident = confidence >= MIN_CONFIDENCE_THRESHOLD
         result = {
-            "is_confirmed": True,
-            "confidence": best.get("confidence", 0.9),
+            "is_confirmed": is_confident,
+            "confidence": confidence,
             "evidence": best.get("evidence", ["Matched via dynamic exploration"]),
             "winning_hypothesis": best,
             "all_hypotheses": hypotheses,
         }
+        if not is_confident:
+            retry_count = state.get("retry_count", 0) + 1
+            print(f"[analyzer] Low confidence ({confidence:.0%} < {MIN_CONFIDENCE_THRESHOLD:.0%}), incrementing retry_count to {retry_count}")
+            return {"verification_results": result, "hypotheses": hypotheses, "retry_count": retry_count}
+        return {"verification_results": result, "hypotheses": hypotheses}
     else:
+        retry_count = state.get("retry_count", 0) + 1
         result = {
             "is_confirmed": False,
             "confidence": 0.0,
@@ -261,8 +324,7 @@ def analyzer_node(state: RCAState) -> dict:
             "winning_hypothesis": {},
             "all_hypotheses": [],
         }
-
-    return {"verification_results": result, "hypotheses": hypotheses}
+        return {"verification_results": result, "hypotheses": [], "retry_count": retry_count}
 
 
 # ── verifier ──────────────────────────────────────────────────────────────────

@@ -250,6 +250,8 @@ services:
       NEO4J_PASSWORD: password
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
+      FASTMCP_HOST: "0.0.0.0"
+      FASTMCP_PORT: "8000"
     depends_on:
       - neo4j
       - prometheus
