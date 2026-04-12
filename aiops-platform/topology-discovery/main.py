@@ -28,7 +28,8 @@ class TopologyDiscovery:
                     auto_offset_reset='latest',
                     enable_auto_commit=True,
                     group_id='topology-discovery-group',
-                    value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+                    value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+                    api_version=(7, 4, 0),
                 )
                 print("Successfully connected to Kafka!")
                 break

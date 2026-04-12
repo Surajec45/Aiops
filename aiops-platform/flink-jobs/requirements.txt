@@ -1,0 +1,2 @@
+apache-flink==1.18.0
+neo4j==5.14.1

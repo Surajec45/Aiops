@@ -1,20 +1,14 @@
 import os
-from psycopg_pool import AsyncConnectionPool
+
 from langgraph.checkpoint.postgres import PostgresSaver
-from agents import create_rca_graph
+from psycopg_pool import AsyncConnectionPool
+
+from graph.builder import create_rca_graph
 from schemas.signals import IncidentContext, RCAConclusion
-from langchain_openai import ChatOpenAI
 
 # Postgres Connection Details
 POSTGRES_URL = os.getenv("POSTGRES_URL", "postgresql://postgres:password@postgres-state:5432/langgraph_state")
 
-def get_verifier_llm():
-    """Helper for agents.py nodes to get an LLM instance."""
-    return ChatOpenAI(
-        model=os.getenv("LLM_MODEL", "gpt-4o"),
-        api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("LLM_BASE_URL") or None
-    )
 
 class RCAOrchestrator:
     def __init__(self):

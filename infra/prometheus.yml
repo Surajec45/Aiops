@@ -1,7 +1,20 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'otel-collector'
+  # OTel Collector self-metrics (pipeline health, queue sizes, etc.)
+  - job_name: 'otel-collector-internal'
     static_configs:
       - targets: ['otel-collector:8888']
+
+  # OTLP metrics exported by the collector from instrumented services
+  # This is where service-level metrics (error rate, latency, etc.) land
+  - job_name: 'otel-services'
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+# Enable remote_write receiver so Tempo metrics generator can push span-derived metrics
+# (service graphs, span metrics) into Prometheus
+remote_write_receiver:
+  enabled: true

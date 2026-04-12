@@ -1,4 +1,5 @@
-# Pseudo-code / Skeleton for Flink Anomaly Detection Job (PyFlink)
+# Pseudo-code / skeleton for a PyFlink anomaly job (not submitted by Compose).
+# Enable the Flink cluster with: docker compose --profile flink up
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.table import StreamTableEnvironment
 

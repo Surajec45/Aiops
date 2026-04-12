@@ -1,20 +1,6 @@
 services:
-  # Streaming Backbone
-  # DB for LangGraph State Persistence
-  postgres-state:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: langgraph_state
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_state_data:/var/lib/postgresql/data
-    networks:
-      - default
-      - voicesentiment-network
 
+  # ── Streaming Backbone ──────────────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     environment:
@@ -31,7 +17,7 @@ services:
     ports:
       - "9092:9092"
     healthcheck:
-      test: [ "CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1" ]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 15
@@ -42,11 +28,33 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # Pre-create all topics on startup
+      KAFKA_CREATE_TOPICS: >-
+        otel-traces:4:1,
+        otel-metrics:4:1,
+        otel-logs:4:1,
+        raw-signals:4:1,
+        correlated-incidents:2:1
     networks:
       - default
       - voicesentiment-network
 
-  # Graph Store
+  # ── State Persistence ───────────────────────────────────────────────────────
+  postgres-state:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: langgraph_state
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_state_data:/var/lib/postgresql/data
+    networks:
+      - default
+      - voicesentiment-network
+
+  # ── Graph Store ─────────────────────────────────────────────────────────────
   neo4j:
     image: neo4j:latest
     ports:
@@ -55,74 +63,13 @@ services:
     environment:
       NEO4J_AUTH: neo4j/password
       NEO4J_PLUGINS: '["apoc"]'
-    networks:
-      - default
-      - voicesentiment-network
-
-  # MCP Server - Tooling Hub
-  mcp-server:
-    build: ../aiops-platform/mcp-server
-    environment:
-      PYTHONUNBUFFERED: "1"
-      MCP_TRANSPORT: "sse"
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: password
-    depends_on:
-      - neo4j
-    networks:
-      - default
-      - voicesentiment-network
-
-  # Stream Processing
-  flink-jobmanager:
-    image: flink:latest
-    ports:
-      - "8081:8081"
-    command: jobmanager
-    environment:
-      - |
-        FLINK_PROPERTIES=
-        jobmanager.rpc.address: flink-jobmanager
-    networks:
-      - default
-      - voicesentiment-network
-
-  flink-taskmanager:
-    image: flink:latest
-    depends_on:
-      - flink-jobmanager
-    command: taskmanager
-    environment:
-      - |
-        FLINK_PROPERTIES=
-        jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 2
-    networks:
-      - default
-      - voicesentiment-network
-
-  # Ingestion
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.96.0
-    container_name: infra-otel-collector-1
-    command: [ "--config=/etc/otel-collector-config.yaml" ]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
-    ports:
-      - "4317:4317" # gRPC
-      - "4318:4318" # HTTP
-      - "8889:8889" # Prometheus metrics
-    depends_on:
-      - kafka
-      - tempo
-      - prometheus
-      - loki
+      - neo4j_data:/data
     networks:
       - default
       - voicesentiment-network
 
-  # Observability Stack
+  # ── Observability Stack ─────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
     volumes:
@@ -144,12 +91,12 @@ services:
 
   tempo:
     image: grafana/tempo:latest
-    command: [ "-config.file=/etc/tempo.yaml" ]
+    command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./tempo.yaml:/etc/tempo.yaml
     ports:
       - "3200:3200"
-      - "4317" # otlp grpc
+      - "4317"
     networks:
       - default
       - voicesentiment-network
@@ -169,9 +116,154 @@ services:
       - default
       - voicesentiment-network
 
-  # ... (existing services)
+  # ── Ingestion ───────────────────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: infra-otel-collector-1
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # gRPC
+      - "4318:4318"   # HTTP
+      - "8889:8889"   # Prometheus metrics exporter
+      - "8888:8888"   # Collector self-metrics
+    depends_on:
+      kafka:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+    networks:
+      - default
+      - voicesentiment-network
+
+  # ── Flink Cluster (stream processing backbone) ──────────────────────────────
+  # Custom image: Flink 1.18 + PyFlink + Kafka connector JAR + job files
+  # Jobs submitted automatically by flink-job-submitter on startup.
+  flink-jobmanager:
+    build:
+      context: ../aiops-platform
+      dockerfile: flink-jobs/Dockerfile
+    command: jobmanager
+    ports:
+      - "8081:8081"   # Flink Web UI
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      # Tuning knobs
+      ZSCORE_THRESHOLD: "3.0"
+      METRICS_WINDOW_MINUTES: "5"
+      METRICS_SLIDE_SECONDS: "30"
+      TRACE_WINDOW_SECONDS: "60"
+      TRACE_ERROR_RATE_THRESHOLD: "0.05"
+      TRACE_MIN_SPAN_COUNT: "10"
+      LOG_WINDOW_SECONDS: "120"
+      LOG_PATTERN_COUNT_THRESHOLD: "3"
+      CORRELATION_WINDOW_SEC: "60"
+      CORRELATION_MIN_SEVERITY: "0.5"
+      CORRELATION_ALLOWED_LATENESS_SEC: "10"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - default
+      - voicesentiment-network
+
+  flink-taskmanager:
+    build:
+      context: ../aiops-platform
+      dockerfile: flink-jobs/Dockerfile
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+    deploy:
+      # Scale task managers for higher throughput: docker compose up --scale flink-taskmanager=3
+      replicas: 1
+    restart: unless-stopped
+    networks:
+      - default
+      - voicesentiment-network
+
+  # Submits all PyFlink jobs to the cluster once it's ready, then exits.
+  flink-job-submitter:
+    build:
+      context: ../aiops-platform
+      dockerfile: flink-jobs/Dockerfile
+    command: bash /opt/flink/jobs/submit_jobs.sh
+    depends_on:
+      - flink-jobmanager
+      - flink-taskmanager
+    environment:
+      JOBMANAGER_URL: http://flink-jobmanager:8081
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    restart: "no"   # run once and exit
+    networks:
+      - default
+      - voicesentiment-network
+
+  # ── Topology Discovery ──────────────────────────────────────────────────────
+  # Kept as a lightweight Python service — simple enough, no windowing needed.
+  # The Flink dependency_discovery.py job handles the same thing at scale
+  # when the Flink cluster is running.
+  topology-discovery:
+    build: ../aiops-platform/topology-discovery
+    depends_on:
+      kafka:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    environment:
+      PYTHONUNBUFFERED: "1"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+    restart: unless-stopped
+    networks:
+      - default
+      - voicesentiment-network
+
+  # ── MCP Server (tooling hub for RCA agents) ─────────────────────────────────
+  mcp-server:
+    build:
+      context: ../aiops-platform
+      dockerfile: mcp-server/Dockerfile
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MCP_TRANSPORT: "sse"
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+    depends_on:
+      - neo4j
+      - prometheus
+      - loki
+    restart: unless-stopped
+    networks:
+      - default
+      - voicesentiment-network
+
+  # ── RCA Engine ──────────────────────────────────────────────────────────────
   rca-engine:
-    build: ../aiops-platform/rca-engine
+    build:
+      context: ../aiops-platform
+      dockerfile: rca-engine/Dockerfile
     ports:
       - "8001:8000"
     depends_on:
@@ -183,12 +275,6 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_started
-      prometheus:
-        condition: service_started
-      loki:
-        condition: service_started
-      tempo:
-        condition: service_started
     env_file:
       - ../.env
     environment:
@@ -199,9 +285,17 @@ services:
       NEO4J_PASSWORD: password
       MCP_SERVER_URL: http://mcp-server:8000/sse/
       POSTGRES_URL: postgresql://postgres:password@postgres-state:5432/langgraph_state
+      # Consume from correlated-incidents produced by Flink signal_correlator job
+      INCIDENT_TOPIC: correlated-incidents
+      INCIDENT_COOLDOWN_SEC: "600"
+      RCA_WORKFLOW_TIMEOUT_SEC: "1800"
+      RCA_MAX_EXPLORATION_STEPS: "10"
+    restart: unless-stopped
     networks:
       - default
       - voicesentiment-network
+
+  # ── Simulator (dev/test only) ───────────────────────────────────────────────
   simulator:
     build:
       context: ../aiops-platform
@@ -216,23 +310,6 @@ services:
       - default
       - voicesentiment-network
 
-  topology-discovery:
-    build: ../aiops-platform/topology-discovery
-    depends_on:
-      kafka:
-        condition: service_healthy
-      neo4j:
-        condition: service_started
-    environment:
-      PYTHONUNBUFFERED: "1"
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: password
-    networks:
-      - default
-      - voicesentiment-network
-
 networks:
   default:
   voicesentiment-network:
@@ -240,8 +317,4 @@ networks:
 
 volumes:
   postgres_state_data:
-  postgres_data:
-  redis_data:
   neo4j_data:
-  upload_data:
-  model_cache:

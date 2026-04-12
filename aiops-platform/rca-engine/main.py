@@ -1,18 +1,26 @@
+import asyncio
+
+import path_setup
+
+path_setup.ensure_platform_path()
+
 from fastapi import FastAPI
-from schemas.signals import IncidentContext, RCAConclusion
-from orchestrator import RCAOrchestrator
-from consumer import IncidentConsumer
 import uvicorn
-import os
+
+from consumer import IncidentConsumer
+from orchestrator import RCAOrchestrator
+from schemas.signals import IncidentContext, RCAConclusion
 
 app = FastAPI(title="Agentic AIOps RCA Engine")
 orchestrator = RCAOrchestrator()
 consumer = IncidentConsumer(orchestrator)
 
+
 @app.on_event("startup")
 async def startup_event():
     print("FastAPI Startup: Triggering Incident Consumer...")
-    consumer.start()
+    consumer.start(asyncio.get_running_loop())
+
 
 @app.post("/analyze", response_model=RCAConclusion)
 async def analyze_incident(context: IncidentContext):
@@ -24,6 +32,7 @@ async def analyze_incident(context: IncidentContext):
     """
     result = await orchestrator.run_workflow(context)
     return result
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

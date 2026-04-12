@@ -1,5 +1,7 @@
 import os
+
 from neo4j import GraphDatabase
+from shared.subgraph_cypher import SERVICE_SUBGRAPH_ALL_CYPHER
 
 class Neo4jClient:
     def __init__(self):
@@ -38,22 +40,11 @@ class Neo4jClient:
         """
         Retrieves the dependency graph centered around a focal service.
         """
-        # Note: We use elementId() for Neo4j 5.x+ compatibility
-        query = """
-        OPTIONAL MATCH (s:Service {name: $service})
-        WITH s
-        WHERE s IS NOT NULL
-        CALL apoc.path.subgraphAll(s, {
-            maxDepth: $depth,
-            relationshipFilter: 'DEPENDS_ON>'
-        })
-        YIELD nodes, relationships
-        RETURN [n in nodes | {id: elementId(n), name: n.name}] as nodes,
-               [r in relationships | {source: elementId(startNode(r)), target: elementId(endNode(r))}] as edges
-        """
         try:
             with self.driver.session() as session:
-                result = session.run(query, service=focal_service, depth=depth)
+                result = session.run(
+                    SERVICE_SUBGRAPH_ALL_CYPHER, service=focal_service, depth=depth
+                )
                 record = result.single()
                 if record and record["nodes"]:
                     return {"nodes": record["nodes"], "edges": record["edges"]}

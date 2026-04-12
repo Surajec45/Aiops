@@ -2,47 +2,94 @@ receivers:
   otlp:
     protocols:
       grpc:
+        endpoint: 0.0.0.0:4317
       http:
+        endpoint: 0.0.0.0:4318
 
 processors:
   batch:
+    timeout: 5s
+    send_batch_size: 1000
+  # Memory limiter prevents OOM under high load
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  # Add resource attributes for downstream consumers
+  resource:
+    attributes:
+      - key: collector.version
+        value: "0.96.0"
+        action: insert
 
 exporters:
-  otlp:
+  # Trace storage
+  otlp/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+
+  # Metrics scraping
   prometheus:
     endpoint: "0.0.0.0:8889"
+    namespace: otel
+    send_timestamps: true
+    metric_expiration: 3m
+
+  # Log aggregation
   loki:
     endpoint: "http://loki:3100/loki/api/v1/push"
+    default_labels_enabled:
+      exporter: false
+      job: true
+
+  # Kafka: raw telemetry for signal-processor and topology-discovery
   kafka/traces:
     brokers: [kafka:29092]
     topic: otel-traces
     encoding: otlp_json
+    producer:
+      max_message_bytes: 10000000
+      compression: snappy
+
   kafka/metrics:
     brokers: [kafka:29092]
     topic: otel-metrics
+    encoding: otlp_json
+    producer:
+      max_message_bytes: 10000000
+      compression: snappy
+
   kafka/logs:
     brokers: [kafka:29092]
     topic: otel-logs
-  kafka/alerts:
-    brokers: [kafka:29092]
-    topic: otel-alerts
+    encoding: otlp_json
+    producer:
+      max_message_bytes: 10000000
+      compression: snappy
+
   debug:
-    verbosity: detailed
+    verbosity: normal
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
-      exporters: [otlp, kafka/traces, debug]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo, kafka/traces]
+
     metrics:
       receivers: [otlp]
-      exporters: [prometheus, kafka/metrics, debug]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, kafka/metrics]
+
     logs:
       receivers: [otlp]
-      exporters: [loki, kafka/logs, debug]
-    logs/alerts:
-      receivers: [otlp]
-      exporters: [kafka/alerts, debug]
+      processors: [memory_limiter, batch]
+      exporters: [loki, kafka/logs]
+
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      address: 0.0.0.0:8888

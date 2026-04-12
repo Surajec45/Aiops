@@ -1,7 +1,11 @@
-from pydantic import BaseModel
-from typing import List, Optional, Dict
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, field_validator
+
 
 class SignalType(str, Enum):
     METRIC_ANOMALY = "metric_anomaly"
@@ -10,22 +14,39 @@ class SignalType(str, Enum):
     DEPENDENCY_CHANGE = "dependency_change"
     FAILURE_RISK = "failure_risk"
 
+
 class StructuredSignal(BaseModel):
     id: str
     timestamp: datetime
     service: str
     type: SignalType
-    severity: float  # 0.0 to 1.0 (0 = normal, 1 = critical)
+    severity: float          # 0.0 – 1.0
     description: str
-    metadata: Dict  # Key-value pairs for evidence (e.g. latency: 500ms)
+    metadata: Dict           # evidence key-value pairs
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _parse_ts(cls, v):
+        if isinstance(v, str):
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
+
 
 class IncidentContext(BaseModel):
     incident_id: str
     timestamp: datetime
     primary_affected_service: str
-    topology_snapshot: Optional[Dict] = {}  # Optional since we use dynamic MCP tools now
+    topology_snapshot: Optional[Dict] = {}
     signals: List[StructuredSignal]
     time_window_minutes: int
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _parse_ts(cls, v):
+        if isinstance(v, str):
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
+
 
 class RCAConclusion(BaseModel):
     incident_id: str
@@ -34,3 +55,26 @@ class RCAConclusion(BaseModel):
     evidence: List[str]
     explanation: str
     suggested_action: Optional[str] = None
+
+
+class CorrelatedIncident(BaseModel):
+    """
+    Produced by the signal-processor service.
+    Consumed by the RCA engine consumer.
+    """
+    incident_id: str
+    timestamp: datetime
+    primary_affected_service: str
+    max_severity: float
+    signal_count: int
+    signal_types: List[str]
+    signals: List[StructuredSignal]
+    topology_snapshot: Optional[Dict] = {}
+    summary: str
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _parse_ts(cls, v):
+        if isinstance(v, str):
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v

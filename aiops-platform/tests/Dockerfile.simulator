@@ -1,8 +1,8 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install kafka-python-ng
+RUN pip install --no-cache-dir kafka-python-ng==2.2.3
 
 COPY ./tests/simulator.py .
 
